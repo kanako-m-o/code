@@ -88,8 +88,14 @@ def safe_replace_year(d: date, year: int) -> date:
 
 
 # --- 明細データ整形用ヘルパー ---
-def format_detail_df(source_df: pd.DataFrame) -> pd.DataFrame:
-    detail = source_df[["_date", "担当者コード", "売上金額", "仕入金額"]].copy()
+def format_detail_df(source_df: pd.DataFrame, include_pair_cols: bool = False) -> pd.DataFrame:
+    cols = ["_date", "納品先名", "物品名", "担当者コード", "売上金額", "仕入金額"] if include_pair_cols else [
+        "_date",
+        "担当者コード",
+        "売上金額",
+        "仕入金額",
+    ]
+    detail = source_df[cols].copy()
     detail = detail.rename(columns={"_date": "受注年月日"})
     detail["粗利金額"] = detail["売上金額"] - detail["仕入金額"]
     detail["粗利率(%)"] = np.where(
@@ -98,6 +104,108 @@ def format_detail_df(source_df: pd.DataFrame) -> pd.DataFrame:
         0.0,
     )
     return detail.sort_values("受注年月日", ascending=False).reset_index(drop=True)
+
+
+# --- 共通：単一案件の明細ビュー描画 ---
+def render_single_item_detail(
+    period_detail_df: pd.DataFrame,
+    all_detail_df: pd.DataFrame,
+    sel_dest: str,
+    sel_item: str,
+    detail_format: dict[str, str],
+    key_prefix: str,
+    use_switcher: bool = False,
+) -> None:
+    st.markdown(f"**対象:** {sel_dest} × {sel_item}")
+
+    if use_switcher:
+        ctrl_col, note_col = st.columns([1.4, 2.6])
+        with ctrl_col:
+            scope_choice = st.segmented_control(
+                "表示する明細期間",
+                options=["指定同時期", "全期間（参考）"],
+                default="指定同時期",
+                key=f"{key_prefix}_scope",
+            )
+        with note_col:
+            if scope_choice == "全期間（参考）":
+                st.caption("※ 同時期以外の月も含めた、基準日以前の全受注データです（担当者絞り込みがある場合は反映）。")
+            else:
+                st.caption("※ サイドバーで指定した「過去3年・同時期」の条件に一致する受注明細です。")
+
+        if scope_choice == "全期間（参考）":
+            target_df = all_detail_df
+            scope_tag = "全期間"
+            file_suffix = "全期間"
+        else:
+            target_df = period_detail_df
+            scope_tag = "同時期"
+            file_suffix = "同時期"
+
+        c1, c2, c3 = st.columns(3)
+        c1.metric(f"{scope_tag} 明細行数", f"{len(target_df):,} 行")
+        c2.metric(f"{scope_tag} 売上合計", f"¥{int(target_df['売上金額'].sum()):,}")
+        c3.metric(f"{scope_tag} 粗利合計", f"¥{int(target_df['粗利金額'].sum()):,}")
+
+        st.dataframe(
+            target_df.style.format(detail_format),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.download_button(
+            label=f"📥 この明細（{scope_tag}）をCSVダウンロード",
+            data=target_df.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"受注明細_{file_suffix}_{sel_dest}_{sel_item}.csv",
+            mime="text/csv",
+            key=f"{key_prefix}_dl_{file_suffix}",
+        )
+    else:
+        tab1, tab2 = st.tabs([
+            f"📅 指定同時期の明細（{len(period_detail_df)}件）",
+            f"🗂️ 全期間の受注明細・参考（{len(all_detail_df)}件）",
+        ])
+
+        with tab1:
+            d_col1, d_col2, d_col3 = st.columns(3)
+            d_col1.metric("同時期 明細行数", f"{len(period_detail_df):,} 行")
+            d_col2.metric("同時期 売上合計", f"¥{int(period_detail_df['売上金額'].sum()):,}")
+            d_col3.metric("同時期 粗利合計", f"¥{int(period_detail_df['粗利金額'].sum()):,}")
+
+            st.dataframe(
+                period_detail_df.style.format(detail_format),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.download_button(
+                label="📥 この受注明細（同時期）をCSVダウンロード",
+                data=period_detail_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"受注明細_同時期_{sel_dest}_{sel_item}.csv",
+                mime="text/csv",
+                key=f"{key_prefix}_dl_period",
+            )
+
+        with tab2:
+            st.caption("※ 同時期以外の月も含めた、基準日以前の全受注データです（担当者絞り込みがある場合は反映）。")
+            a_col1, a_col2, a_col3 = st.columns(3)
+            a_col1.metric("全期間 明細行数", f"{len(all_detail_df):,} 行")
+            a_col2.metric("全期間 売上合計", f"¥{int(all_detail_df['売上金額'].sum()):,}")
+            a_col3.metric("全期間 粗利合計", f"¥{int(all_detail_df['粗利金額'].sum()):,}")
+
+            st.dataframe(
+                all_detail_df.style.format(detail_format),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.download_button(
+                label="📥 この受注明細（全期間）をCSVダウンロード",
+                data=all_detail_df.to_csv(index=False).encode("utf-8-sig"),
+                file_name=f"受注明細_全期間_{sel_dest}_{sel_item}.csv",
+                mime="text/csv",
+                key=f"{key_prefix}_dl_all",
+            )
 
 
 # ================= サイドバー設定 =================
@@ -323,7 +431,10 @@ m_col4.metric("💰 売上金額合計", f"¥{total_sales:,}")
 m_col5.metric("📈 粗利金額合計", f"¥{total_profit:,}")
 
 st.divider()
-st.caption("💡 **一覧の左端にあるチェックボックス（行）をクリックすると、下に過去の受注明細が展開表示されます。**")
+st.caption(
+    "💡 **一覧の左端にあるチェックボックスに複数チェックを入れると、"
+    "選択した件数分だけ下にドリルダウンのタブが増えます。**"
+)
 
 
 # 「2回以上」と「1回」を視覚的に区別するスタイリング
@@ -346,13 +457,13 @@ styled_df = (
     })
 )
 
-# 行選択イベントを受け取るデータフレーム表示
+# 複数行選択イベントを受け取るデータフレーム表示
 selection_event = st.dataframe(
     styled_df,
     use_container_width=True,
     hide_index=True,
     on_select="rerun",
-    selection_mode="single-row",
+    selection_mode="multi-row",
 )
 
 # CSVダウンロード（Excelで文字化けしないBOM付きUTF-8）
@@ -364,24 +475,31 @@ st.download_button(
     mime="text/csv",
 )
 
-# ================= 選択行の受注明細ドリルダウン表示 =================
-selected_rows = selection_event.selection.rows
+# ================= 選択行の受注明細ドリルダウン表示（複数チェック対応） =================
+selected_rows = sorted({idx for idx in selection_event.selection.rows if 0 <= idx < len(view_df)})
+
+detail_format = {
+    "売上金額": "¥{:,.0f}",
+    "仕入金額": "¥{:,.0f}",
+    "粗利金額": "¥{:,.0f}",
+    "粗利率(%)": "{:.1f}%",
+}
 
 if selected_rows:
-    sel_idx = selected_rows[0]
-    if sel_idx < len(view_df):
-        sel_dest = view_df.loc[sel_idx, "納品先名"]
-        sel_item = view_df.loc[sel_idx, "物品名"]
+    selected_pairs = [
+        (view_df.loc[idx, "納品先名"], view_df.loc[idx, "物品名"])
+        for idx in selected_rows
+    ]
 
-        st.divider()
-        with st.expander(f"🔍 受注明細: 【{sel_dest}】 × 【{sel_item}】", expanded=True):
-            # 1) 同時期（集計対象期間・担当者フィルタ適用後）の明細
+    st.divider()
+    with st.expander(f"🔍 選択中の受注明細ドリルダウン（{len(selected_pairs)}件選択中）", expanded=True):
+        if len(selected_pairs) == 1:
+            sel_dest, sel_item = selected_pairs[0]
             period_detail_raw = filtered_df[
                 (filtered_df["納品先名"] == sel_dest) & (filtered_df["物品名"] == sel_item)
             ]
             period_detail_df = format_detail_df(period_detail_raw)
 
-            # 2) 全期間（基準日以前のすべての履歴）の明細
             all_detail_raw = df[
                 (df["納品先名"] == sel_dest)
                 & (df["物品名"] == sel_item)
@@ -391,57 +509,104 @@ if selected_rows:
                 all_detail_raw = all_detail_raw[all_detail_raw["担当者コード"].isin(selected_staffs)]
             all_detail_df = format_detail_df(all_detail_raw)
 
-            tab1, tab2 = st.tabs([
-                f"📅 指定同時期の明細（{len(period_detail_df)}件）",
-                f"🗂️ 全期間の受注明細・参考（{len(all_detail_df)}件）",
-            ])
+            render_single_item_detail(
+                period_detail_df=period_detail_df,
+                all_detail_df=all_detail_df,
+                sel_dest=sel_dest,
+                sel_item=sel_item,
+                detail_format=detail_format,
+                key_prefix="single_item",
+                use_switcher=False,
+            )
+        else:
+            # 複数行チェック時は「まとめタブ」＋「選択した各行ごとのタブ」を動的に生成
+            tab_labels = ["📊 選択中まとめ"] + [
+                f"📌 {i + 1}. {dest} × {item}" for i, (dest, item) in enumerate(selected_pairs)
+            ]
+            tabs = st.tabs(tab_labels)
 
-            detail_format = {
-                "売上金額": "¥{:,.0f}",
-                "仕入金額": "¥{:,.0f}",
-                "粗利金額": "¥{:,.0f}",
-                "粗利率(%)": "{:.1f}%",
-            }
+            # 選択中まとめタブ（指定同時期／全期間スイッチャー付き）
+            with tabs[0]:
+                pair_mask_period = pd.Series(False, index=filtered_df.index)
+                pair_mask_all = pd.Series(False, index=df.index)
+                for dest, item in selected_pairs:
+                    pair_mask_period |= (filtered_df["納品先名"] == dest) & (filtered_df["物品名"] == item)
+                    pair_mask_all |= (df["納品先名"] == dest) & (df["物品名"] == item)
 
-            with tab1:
-                d_col1, d_col2, d_col3 = st.columns(3)
-                d_col1.metric("同時期 明細行数", f"{len(period_detail_df):,} 行")
-                d_col2.metric("同時期 売上合計", f"¥{int(period_detail_df['売上金額'].sum()):,}")
-                d_col3.metric("同時期 粗利合計", f"¥{int(period_detail_df['粗利金額'].sum()):,}")
+                combined_period_raw = filtered_df[pair_mask_period]
+                combined_all_raw = df[pair_mask_all & (df["_date"] <= ref_date)]
+                if selected_staffs:
+                    combined_all_raw = combined_all_raw[combined_all_raw["担当者コード"].isin(selected_staffs)]
+
+                combined_period_df = format_detail_df(combined_period_raw, include_pair_cols=True)
+                combined_all_df = format_detail_df(combined_all_raw, include_pair_cols=True)
+
+                ctrl_col, note_col = st.columns([1.4, 2.6])
+                with ctrl_col:
+                    summary_scope = st.segmented_control(
+                        "表示する明細期間（まとめ）",
+                        options=["指定同時期", "全期間（参考）"],
+                        default="指定同時期",
+                        key="summary_tab_scope",
+                    )
+                with note_col:
+                    if summary_scope == "全期間（参考）":
+                        st.caption("※ 選択中案件の同時期以外も含めた、基準日以前の全受注データです（担当者絞り込みがある場合は反映）。")
+                    else:
+                        st.caption("※ 選択中案件について、サイドバーで指定した「過去3年・同時期」に一致する明細です。")
+
+                if summary_scope == "全期間（参考）":
+                    target_combined_df = combined_all_df
+                    sum_tag = "全期間"
+                    sum_file_suffix = "全期間"
+                else:
+                    target_combined_df = combined_period_df
+                    sum_tag = "同時期"
+                    sum_file_suffix = "同時期"
+
+                c_col1, c_col2, c_col3, c_col4 = st.columns(4)
+                c_col1.metric("選択対象数", f"{len(selected_pairs):,} 件")
+                c_col2.metric(f"{sum_tag} 明細合計行数", f"{len(target_combined_df):,} 行")
+                c_col3.metric(f"{sum_tag} 売上合計", f"¥{int(target_combined_df['売上金額'].sum()):,}")
+                c_col4.metric(f"{sum_tag} 粗利合計", f"¥{int(target_combined_df['粗利金額'].sum()):,}")
 
                 st.dataframe(
-                    period_detail_df.style.format(detail_format),
+                    target_combined_df.style.format(detail_format),
                     use_container_width=True,
                     hide_index=True,
                 )
 
-                detail_csv = period_detail_df.to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    label="📥 この受注明細（同時期）をCSVダウンロード",
-                    data=detail_csv,
-                    file_name=f"受注明細_同時期_{sel_dest}_{sel_item}.csv",
+                    label=f"📥 選択中まとめ明細（{sum_tag}）をCSVダウンロード",
+                    data=target_combined_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"受注明細_選択まとめ_{sum_file_suffix}_{ref_date.strftime('%Y%m%d')}.csv",
                     mime="text/csv",
-                    key="dl_period_detail",
+                    key=f"dl_combined_detail_{sum_file_suffix}",
                 )
 
-            with tab2:
-                st.caption("※ 同時期以外の月も含めた、基準日以前の全受注データです（担当者絞り込みがある場合は反映）。")
-                a_col1, a_col2, a_col3 = st.columns(3)
-                a_col1.metric("全期間 明細行数", f"{len(all_detail_df):,} 行")
-                a_col2.metric("全期間 売上合計", f"¥{int(all_detail_df['売上金額'].sum()):,}")
-                a_col3.metric("全期間 粗利合計", f"¥{int(all_detail_df['粗利金額'].sum()):,}")
+            # チェックを付けた各行ごとの個別タブ
+            for idx_tab, (sel_dest, sel_item) in enumerate(selected_pairs, start=1):
+                with tabs[idx_tab]:
+                    period_detail_raw = filtered_df[
+                        (filtered_df["納品先名"] == sel_dest) & (filtered_df["物品名"] == sel_item)
+                    ]
+                    period_detail_df = format_detail_df(period_detail_raw)
 
-                st.dataframe(
-                    all_detail_df.style.format(detail_format),
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                    all_detail_raw = df[
+                        (df["納品先名"] == sel_dest)
+                        & (df["物品名"] == sel_item)
+                        & (df["_date"] <= ref_date)
+                    ]
+                    if selected_staffs:
+                        all_detail_raw = all_detail_raw[all_detail_raw["担当者コード"].isin(selected_staffs)]
+                    all_detail_df = format_detail_df(all_detail_raw)
 
-                all_detail_csv = all_detail_df.to_csv(index=False).encode("utf-8-sig")
-                st.download_button(
-                    label="📥 この受注明細（全期間）をCSVダウンロード",
-                    data=all_detail_csv,
-                    file_name=f"受注明細_全期間_{sel_dest}_{sel_item}.csv",
-                    mime="text/csv",
-                    key="dl_all_detail",
-                )
+                    render_single_item_detail(
+                        period_detail_df=period_detail_df,
+                        all_detail_df=all_detail_df,
+                        sel_dest=sel_dest,
+                        sel_item=sel_item,
+                        detail_format=detail_format,
+                        key_prefix=f"multi_item_{idx_tab}",
+                        use_switcher=True,
+                    )
