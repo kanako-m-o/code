@@ -8,7 +8,7 @@
 
 以下のリンクから、ブラウザ上で今すぐアプリを試用できます（サンプルデータ内蔵のため、ファイルを用意しなくてもそのまま動作確認が可能です）。
 
-👉 [**アプリを試用する（Streamlit Community Cloud）**](https://your-app-url.streamlit.app/)
+👉 [**アプリを試用する（Streamlit Community Cloud）**](https://code-idrrp7vzv.streamlit.app/)
 
 ## 📖 アプリの機能概要
 
